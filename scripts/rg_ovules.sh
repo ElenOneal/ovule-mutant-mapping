@@ -34,8 +34,9 @@ while IFS=$'\t' read -r a b c d; do
     echo "#SBATCH --output=${b}.out"
     echo "#SBATCH --error=${b}.err"
     echo '#SBATCH --cpus-per-task=1'
-    echo '#SBATCH --account=biodept'
-    echo '#SBATCH -p common,biodept'
+    echo '#SBATCH --mail-type=ALL'
+    echo '#SBATCH --mail-user=eo22@duke.edu'
+    echo '#SBATCH -p common,scavenger'
     echo "#SBATCH --chdir=$DIR"
     echo '#SBATCH --mem=8G'
     echo ''

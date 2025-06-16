@@ -1,0 +1,692 @@
+---
+title: "Ovules.Rmd"
+author: "Elen"
+date: '`r strftime(Sys.time(), format = "%B %d, %Y")`'
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE,eval=TRUE}
+require("knitr")
+library(rmarkdown)
+library(reticulate)
+library(here)
+```
+
+```{r wrap-hook,include=FALSE,eval=TRUE}
+library(knitr)
+hook_output = knit_hooks$get('output')
+knit_hooks$set(output = function(x, options) {
+  # this hook is used only when the linewidth option is not NULL
+  if (!is.null(n <- options$linewidth)) {
+    x = knitr:::split_lines(x)
+    # any lines wider than n should be wrapped
+    if (any(nchar(x) > n)) x = strwrap(x, width = n)
+    x = paste(x, collapse = '\n')
+  }
+  hook_output(x, options)
+})
+```
+
+Rationale
+We did QTL mapping in an F2 mapping population to discover the loci underlying the ovule mutant in M. nudatus GMR2. The F2 population was created by first crossing DHRO22 x GMR2, both at least 6 generations inbred, then selfing the F1. Phenotyping of F2s revealed that the ovule mutant appears to segregate at a 25-50% rate, suggesting a single locus.
+
+An Rmarkdown file (Ovules.Rmd) was created to document analyses. Work was performed in R version 4.0.5 (2021-03-31).
+
+A conda virtual environment (“f1mapping”) was employed for most programs used in this project, with the exception of some scripts to de-aggregate F2s in ddRAD libraries, which used python 2.7.
+
+
+Note: to execute this file, first activate the conda virtual environment "f1mapping". Here is the list of installation commands used to create this environment:
+
+conda create -n f1mapping python=3.8
+conda install -c conda-forge r-base=4.0.5
+conda install -c conda-forge r-knitr=1.33
+Rmarkdown and reticulate were installed within R using install.packages()
+
+### Cross details
+
+The cross is as follows: DHRO22 x GMR2 --> F1. Selfed F1 for 88 F2s. Both DHRO22 and GMR2 are at least 6 generations inbred.
+
+The total number of sequenced individuals per backcross mapping populations is 88. There were two libraries prepared. One had 48 barcoded individuals and the other had 43. 3 samples in the latter library were from a different mapping project and were added to fill out the plate. Plate layout is found in the file ovule_plate_layout.txt. 
+
+### Processing of ddRAD reads
+
+Thom Nelson's preliminary scripts are written for Python 2.7.18. I have installed a virtual environment to work with Python 2. To get there type:
+
+conda activate py2
+
+```{r,include=TRUE,eval=FALSE}
+plates <- read.table('ovule_plate_layout.txt',h=F,sep='\t')
+head(plates)
+```
+
+Read files copied into the correct directory then renamed.
+
+```{bash,include=TRUE,eval=FALSE}x
+cp ~/data/SequencingRun_May2022/ddRADPlates_2022/JW77_*gz /work/01_mapping/03_ovules/
+cp ~/data/SequencingRun_May2022/ddRADPlates_2022/JW78_*gz /work/01_mapping/03_ovules/
+```
+
+```{bash,include=TRUE,eval=FALSE}
+#make list of library sequencing files
+ls -1 JW*gz > sequencing_files.txt
+#take second column from library layout
+cut -f2 ovule_plate_layout.txt > library_names.txt
+#produce new file copying each line from library_names.txt 4x to make new file
+perl -ne 'print "$_" x4' library_names.txt > library_names_4x
+#strip first two "_" to get file type from first column of sequencing_files.txt
+cut -d'_' -f4 sequencing_files.txt > file_type
+sed -i 's/I1/.i7/g' file_type 
+sed -i 's/R1/.1/g' file_type 
+sed -i 's/R2/.i5/g' file_type 
+sed -i 's/R3/.2/g' file_type 
+paste library_names_4x file_type > test
+#replace tab with ""
+sed -i 's/\t//g' test
+#add .fq.gz to each in test
+sed -e 's/$/.fq.gz/' -i test
+#paste columns sequencing_files.txt library_names_4x test > test2
+paste sequencing_files.txt test > mvcommand
+#prefix mvfile with mv command
+sed -i 's/JW/mv JW/g' mvcommand
+#replace tab with space (because it's ugly not because it matters)
+sed -i 's/\t/ /g' mvcommand
+echo '#!/bin/bash' >> mv.sh
+echo '#' >> mv.sh
+echo '#$ -S /bin/bash' >> mv.sh 
+cat mv.sh mvcommand > mvscript.sh
+chmod 755 mvscript.sh
+mv dxg*gz 01_rawreads
+#./mvscript.sh
+```
+
+Execute the resulting scripts in py2 virtual environment
+
+```{bash,include=TRUE,eval=FALSE}
+./rmdup.sh ovule_library_filenames.txt /work/01_mapping/03_ovules/01_rawreads/
+for file in rmdup_*.sh; do sbatch $file; done
+```
+
+
+Execute the resulting scripts in py2 virtual environment
+
+Flipreads.
+
+```{bash,include=FALSE,eval=FALSE}
+mkdir 02_flipreads
+mv 01_rawreads/*rmdup*gz 02_flipreads
+
+cd 02_flipreads
+
+mkdir dxg_f2_1
+mkdir dxg_f2_2_mixpool
+
+mv dxg_f2_1*gz dxg_f2_1/
+mv dxg_f2_2_mixpool*gz dxg_f2_2_mixpool/
+```
+
+
+Next use flip2BeRAD.py to flip the reads for each half-plate. From Thom Nelson: "For the bestRAD protocol, the genomic DNA fragment (including the inline barcode) gets randomly incorporated into the i5 and i7 adaptors, but the downstream steps require the first/forward read to contain the barcode and rad tag."
+
+"The output file will be called filtered_forward.fastq and filtered_reverse.fastq, so now is a good time to make separate folders for each half-plate and put the resultng files in those folders."
+
+The barcode list is in the file ddrad_barcode_seqs.txt. You can see it here:
+
+```{r,include=TRUE,eval=FALSE}
+barcode_seqs <- read.table('ddrad_barcode_seqs.txt',sep='\t',h=F)
+head(barcode_seqs)
+```
+
+Number of mismatches for barcodes is set to 0. This insures that reads will be strictly from the individual labeled with that barcode. Setting this higher risks including errant reads and causing errors in genotyping.
+
+Try with offset bases of 0 first. ("The number of basepairs to offset from the 5' end of the read when searching for barcodes")
+
+```{bash,flip_reads,include=TRUE,eval=FALSE}
+./flip.sh ovule_library_filenames.txt /work/01_mapping/03_ovules/02_flipreads/
+for file in *.flip.sh; do sbatch $file; done
+```
+
+
+```{r,barcode_files,include=FALSE,eval=FALSE}
+dxg_f2_1_barcodes <- read.table('dxg_f2_1.barcodes.txt',sep='\t',h=F)
+head(dxg_f2_1_barcodes)
+```
+
+Trim reads with trimmomatic v 0.39. Pull out barcodes using STACKS process_radtags
+http://catchenlab.life.illinois.edu/stacks/comp/process_radtags.php
+
+```{bash,trim_reads,include=FALSE,eval=FALSE}
+./trim_ddrad.sh ovule_library_filenames.txt /work/01_mapping/03_ovules/02_flipreads/
+for file in *.trim.sh; do sbatch $file; done
+```
+
+Make directory for alignments then move deaggregated read files to alignment folder.
+
+```{bash,include=FALSE,eval=FALSE}
+mkdir 03_align
+
+mv 02_flipreads/*/*.1.fq.gz /work/01_mapping/03_ovules/03_align
+mv 02_flipreads/*/*.2.fq.gz /work/01_mapping/03_ovules/03_align
+
+cd 03_align
+rm *rem.1.fq.gz
+rm *rem.2.fq.gz
+```
+
+Bash script for writing alignment files for each F2. First trim reads, align to TOL v5 genome, add read groups. Collect stats on alignment for each F2.
+
+```{bash,align_f2s,include=FALSE,eval=FALSE}
+./trim_align_ovules.sh ovule_barcode_key.txt /work/01_mapping/03_ovules/03_align/ /data/im767.v2/ Mguttatus.IM767.v2.fa
+./rg_ovules.sh ovule_barcode_key.txt /work/01_mapping/03_ovules/03_align/ /hpc/home/picard.jar /data/im767.v2/ Mguttatus.IM767.v2.fa
+```
+
+```{bash,align_picard_parents,include=TRUE,eval=FALSE}
+./trim_parents.sh ovule_genome_sequence_files.txt /work/00_parent_reads/00_raw.reads/ /work/00_parent_reads/00_clean.reads /work/01_mapping/03_ovules/03_align
+
+./align_parents.sh ovule_genome_sequence_files.txt /work/01_mapping/03_ovules/03_align/ /work/00_parent_reads/00_clean.reads/ /data/im767.v2/ Mguttatus.IM767.v2.fa
+
+./rg_ovule_parents.sh ovule_genome_sequence_files.txt /work/01_mapping/03_ovules/03_align/ /hpc/home/picard.jar /data/im767.v2/ Mguttatus.IM767.v2.fa
+```
+
+```{bash,f1_readgroups,include=FALSE,eval=FALSE}
+cd 03_align
+mkdir temp/PseudoF1
+
+java -Xmx8g -jar /hpc/home/picard.jar AddOrReplaceReadGroups RGLB=DHRO22_S23 RGPL=ILLUMINA RGPU=DHRO22 RGSM=PseudoF1 I=DHRO22_S23.RG.bam O=DHRO22_S23.F1.RG.bam VALIDATION_STRINGENCY=LENIENT USE_JDK_DEFLATER=true USE_JDK_INFLATER=true TMP_DIR=temp/PseudoF1
+
+java -Xmx8g -jar /hpc/home/picard.jar AddOrReplaceReadGroups RGLB=DHRO22_S28 RGPL=ILLUMINA RGPU=DHRO22 RGSM=PseudoF1 I=DHRO22_S8.RG.bam O=DHRO22_S8.F1.RG.bam VALIDATION_STRINGENCY=LENIENT USE_JDK_DEFLATER=true USE_JDK_INFLATER=true TMP_DIR=temp/PseudoF1
+
+java -Xmx8g -jar /hpc/home/picard.jar AddOrReplaceReadGroups RGLB=GMR2_S22 RGPL=ILLUMINA RGPU=GMR2 RGSM=PseudoF1 I=GMR2_S22.RG.bam O=GMR2_S22.F1.RG.bam VALIDATION_STRINGENCY=LENIENT USE_JDK_DEFLATER=true USE_JDK_INFLATER=true TMP_DIR=temp/PseudoF1
+
+java -Xmx8g -jar /hpc/home/picard.jar AddOrReplaceReadGroups RGLB=GMR2_S7 RGPL=ILLUMINA RGPU=GMR2 RGSM=PseudoF1 I=GMR2_S7.RG.bam O=GMR2_S7.F1.RG.bam VALIDATION_STRINGENCY=LENIENT USE_JDK_DEFLATER=true USE_JDK_INFLATER=true TMP_DIR=temp/PseudoF1
+
+samtools index DHRO22_S23.F1.RG.bam
+samtools index DHRO22_S8.F1.RG.bam 
+samtools index GMR2_S22.F1.RG.bam
+samtools index GMR2_S7.F1.RG.bam 
+```
+
+Create scripts to call SNPs with bcftools.
+
+```{bash,create_bcftools_script,include=FALSE,eval=FALSE}
+./bcftools_ovules.sh im767.v2.list bamlist.txt /work/01_mapping/03_ovules/04_bcftools/ /data/im767.v2/ Mguttatus.IM767.v2.fa ovule_f2s
+```
+
+Filter with bcftools: 1) Filter based on mapping quality; 2) remove repeats; 3) keep only snps
+
+
+Concatenate all scaffold vcf files.
+
+```{bash,include=FALSE,eval=FALSE}
+cd 04_bcftools
+
+bcftools concat -f vcffiles_snpsonly.txt -Ov -o ovule_f2s.snps_only.vcf
+mv ovule_f2s.snps_only.vcf ../05_filter/
+
+bcftools concat -f vcffiles_filtered.txt -Oz -o ovule_f2s.filtered.vcf.gz
+tabix ovule_f2s.filtered.vcf.gz
+```
+
+### Use Lepmap3 to construct linkage map 
+
+https://sourceforge.net/p/lep-map3/wiki/LM3%20Home
+
+Arguments for filter_vcf_for_lepmap3_ovule_cross.py
+
+--invcf, type=str, required=True, help="input VCF v 4.1 file"
+--ParentList, type=str, required=True, help="input file with parent names, crossing direction (mom or dad, inbred or F1, and minimum and max depth for filtering"
+--SampleList, type=str, required=True, help="tab-delimited file with sample Names"
+--out, type=str, required=True, help = Prefix for output file
+--minMapQ, type=int, required=True, help = Minimum phred-scaled Mapping Quality
+--filterMissingParents, type=str2bool, nargs=?, const=True, default=False, help="Activate filtering out sites with missing parents."
+--filterInbredParents, type=str2bool, nargs=?, const=True, default=False, help="Activate filtering out heterozygous inbred parents."
+--filterforhets, type=str2bool, nargs=?, const=True, default=False, help="Activate filtering homozygous F1s."
+--minparentdepth,type=str2bool, nargs=?, const=True, default=False, help = use depth info from parent file to filter by minimum depth
+--maxparentdepth, type=str2bool, nargs=?, const=True, default=False,help = use depth info from parent file to filter by maximum depth
+--FractionF2, type = int, default = 0, help = proportion offspring required to pass filter
+--minF2depth, type=int, required=True, default = 0, help = minimum depth of F2s to be included
+--missingList, type=str, required=True, help = File with fraction of missing data for each backcross offspring
+--MaxMissingData, type = float, required=True, help = 'Maximum missing data allowed for backcross offspring; set to 0 to allow all samples'
+
+```{bash,include=TRUE,eval=FALSE}
+cd 05_filter
+module add VCFtools
+
+PRE=ovule_f2s
+OUT=ovule_f2s
+
+vcftools --vcf $OUT.snps_only.vcf --missing-indv
+mv out.imiss $OUT.frac_missing_data.txt
+```
+
+
+```{bash,include=TRUE,eval=FALSE}
+cd 05_filter
+
+PRE=ovule_f2s
+OUT=ovule_f2s.min60
+
+python filter_vcf_for_lepmap3_ovule_cross.py --invcf $PRE.snps_only.vcf --ParentList ovule_parents.txt --SampleList ovule_samples.txt --out $OUT --minMapQ 20 --filterInbredParents True --filterforhets True --minparentdepth --maxparentdepth --missingList $PRE.frac_missing_data.txt --MaxMissingData 1 --filterMissingParents True --FractionF2 60 --minF2depth 4 > out
+```
+
+```{bash,include=FALSE,eval=FALSE}
+cd 05_filter
+PRE=ovule_f2s
+OUT=ovule_f2s.min60
+
+
+module add VCFtools
+vcftools --vcf $OUT.filtered.vcf --missing-indv
+mv out.imiss $OUT.frac_missing_data.txt
+
+grep -v "0/2" ovule_f2s.min60.filtered.vcf | grep -v "2/3" > ovule_f2s.min60.max3.vcf
+```
+
+Arguments =  Namespace(FractionF2=60, MaxMissingData=1.0, ParentList='ovule_parents.txt', SampleList='ovule_samples.txt', filterInbredParents=True, filterMissingParents=True, filterforhets=True, invcf='ovule_f2s.snps_only.vcf', maxparentdepth=True, minF2depth=4, minMapQ=20, minparentdepth=True, missingList='ovule_f2s.frac_missing_data.txt', out='ovule_f2s.min60')
+--- 6 minutes to complete task ---
+There are 6721051 sites
+There are 6720200 variant SNP sites
+There are 6720200 sites with MQ >= 20
+There are 2046079 sites with missing parents, 1106860 with het inbreds, and 4900739 with homozygous F1s
+There are 3301518 sites with low parental depth
+There are 520 sites with high parental depth
+There are 3090698 sites where grandparents have the same genotype
+There are 6570638 sites with fewer than 60 percent F2s
+There are 149 sites with more than 3 F2 genotypes
+There are 27602 final sites
+
+line ovule_f2s.min60.max3.vcf
+27638 ovule_f2s.min60.max3.vcf
+
+```{bash,include=TRUE,eval=FALSE}
+cd 05_filter
+
+PRE=ovule_f2s.min60.max3
+OUT=ovule_f2s.min60.max3
+
+module add VCFtools
+vcftools --vcf $PRE.vcf --thin 150 --recode --recode-INFO-all --stdout > $OUT.thinned.vcf
+
+vcftools --vcf $OUT.thinned.vcf --missing-indv
+mv out.imiss $OUT.frac_missing_data.txt
+```
+
+VCFtools - 0.1.17
+(C) Adam Auton and Anthony Marcketta 2009
+
+Thin vcf with vcftools, requiring SNPs to be 150 bp apart.
+
+Parameters as interpreted:
+        --vcf ovule_f2s.min60.max3.vcf
+        --recode-INFO-all
+        --thin 150
+        --recode
+        --stdout
+
+Outputting VCF file...
+After filtering, kept 13376 out of a possible 27582 Sites
+Run Time = 2.00 seconds
+
+(END)
+
+Create pedigree file. DHRO22 is grandmother, GMR2 is grandfather, Pseudo F1s are created as mom and dad, then given as parents for F2s. Replicated sequences for DHRO22 and GMR2 were added into vcf to check phasing later on.
+
+Distribution of missing data
+
+```{r,echo=FALSE,eval=TRUE}
+missing <- read.table(here::here('data','ovule_f2s.min60.max3.frac_missing_data.txt'),h=T,sep='\t')
+hist(missing$F_MISS)
+quantile(missing$F_MISS)
+```
+
+
+```{r,include=TRUE,eval=TRUE}
+suppressMessages(library(dplyr))
+missing <- read.table(here::here('data','ovule_f2s.min60.max3.frac_missing_data.txt'),h=T,sep='\t')
+missing <- missing %>% filter(F_MISS<0.4)
+f2s <- read.table(here::here('data','ovule_samples.txt'),h=F,sep='\t')
+colnames(f2s) <- c('sample')
+f2s <- f2s %>% filter(sample %in% missing$INDV)
+write.table(f2s,here::here('data','ovule_samples_nomissing.txt'),quote=F,row.names=F,sep='\t',col.names=F)
+```
+
+```{bash,include=FALSE,eval=FALSE}
+cd 05_filter
+PRE=ovule_f2s.min60.max3
+OUT=ovule_f2s.min60.max3
+
+family_name="Fam"
+GM="DHRO22"
+GD="GMR2"
+Mom="PseudoF1"
+Dad="PseudoF1_D1"
+rm ovule.ped.txt
+rm ovule.ped.transpose.txt
+printf "CHR\tCHR\tCHR\tCHR\tCHR\tCHR\n" >> ovule.ped.txt
+printf "POS\tPOS\tPOS\tPOS\tPOS\tPOS\n" >> ovule.ped.txt
+printf "$family_name\t$GM\t0\t0\t2\t0\n" >> ovule.ped.txt
+printf "$family_name\t$GD\t0\t0\t1\t0\n" >> ovule.ped.txt
+printf "$family_name\t$Dad\t$GD\t$GM\t1\t0\n" >> ovule.ped.txt
+printf "$family_name\t$Mom\t$GD\t$GM\t2\t0\n" >> ovule.ped.txt
+printf "$family_name\tDHRO22_D1\t$Dad\t$Mom\t0\t0\n" >> ovule.ped.txt
+printf "$family_name\tGMR2_D1\t$Dad\t$Mom\t0\t0\n" >> ovule.ped.txt
+while IFS=$'\n', read -r f ; do
+	printf "$family_name\t$f\t$Dad\t$Mom\t0\t0\n"  >> ovule.ped.txt
+done < ovule_samples_nomissing.txt
+
+cat ovule.ped.txt | datamash transpose > ovule.ped.transpose.txt
+
+lod='10'
+theta='.20'
+dT=0.0001
+
+DIR=/work/01_mapping/03_ovules/05_filter/
+
+echo '#!/bin/bash' > lepmap$lod$theta.$dT.sh
+echo '#' >> lepmap$lod$theta.$dT.sh
+echo '#$ -S /bin/bash' >> lepmap$lod$theta.$dT.sh 
+echo '#SBATCH --get-user-env' >> lepmap$lod$theta.$dT.sh
+echo '#SBATCH --job-name='$lod,$theta	>> lepmap$lod$theta.$dT.sh
+echo '#SBATCH --output='$lod$theta.out	>> lepmap$lod$theta.$dT.sh
+echo '#SBATCH --error='$lod$theta.err >> lepmap$lod$theta.$dT.sh
+echo '#SBATCH --cpus-per-task=8' >> lepmap$lod$theta.$dT.sh
+echo '#SBATCH --account=biodept' >> lepmap$lod$theta.$dT.sh
+echo '#SBATCH -p common,biodept' >> lepmap$lod$theta.$dT.sh
+echo '#SBATCH --chdir='$DIR >> lepmap$lod$theta.$dT.sh
+echo '#SBATCH --mem=16G' >> lepmap$lod$theta.$dT.sh
+echo -en '\n' >> lepmap$lod$theta.$dT.sh
+echo java -cp  ~/lepmap3/bin ParentCall2 data=ovule.ped.transpose.txt vcfFile=$PRE.thinned.vcf removeNonInformative=1 \> data.$OUT.call >> lepmap$lod$theta.$dT.sh
+echo -en '\n' >> lepmap$lod$theta.$dT.sh
+echo java -cp ~/lepmap3/bin Filtering2 data=data.$OUT.call dataTolerance=$dT removeNonInformative=1 outputHWE=0 missingLimit=0.30 \> data.$OUT.$dT.call >> lepmap$lod$theta.$dT.sh
+echo -en '\n' >> lepmap$lod$theta.$dT.sh
+echo java -cp ~/lepmap3/bin/ SeparateChromosomes2 numThreads=8 grandparentPhase=1 data=data.$OUT.$dT.call lodLimit=$lod theta=$theta \> map.$lod$theta.$dT.$OUT.txt >> lepmap$lod$theta.$dT.sh
+echo -en '\n' >> lepmap$lod$theta.$dT.sh
+echo java -cp ~/lepmap3/bin/ OrderMarkers2 numThreads=8 grandparentPhase=1 data=data.$OUT.$dT.call map=map.$lod$theta.$dT.$OUT.txt outputPhasedData=1 identicalLimit=0.01 \> order.$lod$theta.$dT.id.$OUT.txt >> lepmap$lod$theta.$dT.sh
+echo -en '\n' >> lepmap$lod$theta.$dT.sh
+```
+
+Warning: Different number of grandparents (4 and 2) in family Fam
+Found 2 grandparents in family Fam
+Number of individuals = 90
+Number of families = 1
+Number of called markers = 13327 (13327 informative)
+Number of called Z/X markers = 0
+chi^2 limits are 15.1357421875, 18.419921875, 21.107421875
+Warning: Different number of grandparents (4 and 2) in family Fam
+Found 2 grandparents in family Fam
+Number of individuals = 90
+Number of families = 1
+Number of markers = 13327
+Loading file
+Warning: Different number of grandparents (4 and 2) in family Fam
+Found 2 grandparents in family Fam
+Number of individuals = 90
+Number of families = 1
+File loaded with 11497 SNPs
+Number of individuals = 88 excluding grandparents
+Number of families = 1
+computing pairwise LOD scores
+123456789 done!
+ done!
+number of LGs = 14 singles = 10
+Number of LGs = 14, markers in LGs = 11487, singles = 10
+
+```{bash,include=FALSE,eval=FALSE}
+cd 05_filter
+PRE=ovule_f2s.min60.max3
+OUT=ovule_f2s
+
+cat data.$OUT.f.call | cut -f1,2 | awk '(NR>=7)' > $OUT.f.snps.txt
+awk -vFS="\t" -vOFS="\t" '(NR==FNR){s[NR-1]=$0}(NR!=FNR){if ($1 in s) $1=s[$1];print}' $OUT.f.snps.txt order.$lod$theta.dL$dL.$OUT.txt > order.$lod$theta.dL$dL.$OUT.mapped
+
+python split_lepmap.py order.$lod$theta.dL$dL.$OUT.mapped $OUT.$lod$theta False
+
+awk -vfullData=1 -f map2genotypes.awk order.$lod$theta.dL$dL.$OUT.txt > ovule_f2s.$lod$theta.phase1.txt
+```
+
+
+```{r,plot_linkage_map,echo=FALSE,eval=TRUE}
+suppressMessages(library(htmltools))
+order <- read.table(here::here('data','ovule_f2s.10.20.0001.id_mappingorder.txt'),h=F,sep='\t')
+source('plot_linkage_groups.R')
+plotLM <- plot_lg(order)
+
+tagList(plotLM)
+```
+
+Best map is Lod 10 Theta 0.20 Filtered with data Tolerance = 0.0001 and identicalLimit=0.01
+
+Getting phased genotypes for individuals. F2s were phased with grandparent phase (DHRO22 vs GMR2) and without filling in missing data. Assigns the DHRO22 homozygous genotype "2 2", the GMR2 homozygous genotype "1 1", and the heterozygous genotypes either "1 2" or "2 1". 
+
+For chromosome 10 and the rest of the linkage groups:
+
+```{bash,include=FALSE,eval=FALSE}
+cd 06_sd
+awk -vfullData=1 -f /hpc/home/eo22/lepmap3/map2genotypes.awk order.10.20.0.0001.id.ovule_f2s.txt > ovule_f2s.10.20.phase1.txt
+```
+
+I also checked the number of recombination events per F2 per linkage group. When an individual is outside the general distribution, it suggests well contamination.
+
+```{bash,include=FALSE,eval=FALSE}
+cd 05_filter
+mv 10.20.err Results.10.20.f.id.out
+grep "Individual" Results.10.20.f.id.out > recombination_rates_individuals.txt
+```
+
+Below is a plot of the distribution of recombination events per linkage group. 
+
+```{r,recombinationfrequency,warning=FALSE,echo=FALSE,eval=TRUE}
+suppressMessages(library(ggplot2))
+suppressMessages(library(dplyr))
+recom_rates <- read.table(here::here('data','recombination_rates_individuals.txt'),h=F,sep='\t')
+recom_rates <- recom_rates %>% mutate(F2name=V3) %>% mutate(no_times=V5) %>% select(F2name,no_times)
+indv_recomb <- aggregate(no_times~F2name,data=recom_rates,mean)
+ggplot(indv_recomb,aes(x=no_times))+geom_histogram()+xlim(0,5)+labs(title="F2 Recombination Rates",x="Recombination events per chromosome", y = "Frequency")
+write.table(indv_recomb,here::here('data','recombination_rates_f2s.txt'),quote=F,row.names=F,sep='\t')
+```
+
+### Create phased genotype file
+
+```{r,create_phased_genotype_file,echo=FALSE,eval=TRUE}
+suppressMessages(library(dplyr))
+suppressMessages(library(plotly))
+suppressMessages(library(htmltools))
+suppressMessages(library(stringr))
+ped <- read.table(here::here('data','ovule.ped.txt'),h=F,sep='\t')
+phase <- read.table(here::here('data','ovule_f2s.10.20.phase.txt'),h=F,sep='\t')
+map <- read.table(here::here('data','order.10.20.0.0001.id.ovule_f2s.mapped'),h=F,sep='\t')
+order <- read.table(here::here('data','ovule_f2s.10.20.0001.id_mappingorder.txt'),h=F,sep='\t')
+lg <- c(1,2,3,4,5,6,7,8,9,10,11,12,13,14)
+new_lg <- c(14,4,10,6,8,13,2,12,5,9,1,3,11,7)
+flip <- c(TRUE,TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,FALSE,FALSE,TRUE,FALSE,FALSE,FALSE,FALSE)
+lgkey <- data.frame(lg,new_lg,flip)
+colnames(lgkey) <- c('lg','new_lg','flip')
+N <- 14
+#length of fam1 = # bc in family 1
+f1l <- 84
+f1l <- f1l+2
+phasedf <- phase[-(1:6),-4]
+phasedf <- phasedf[,-2]
+map <- map[,1:2]
+map <- cbind(order$V1,map)
+phasedf <- cbind(map,phasedf)
+#fam1 <- phasedf[,1:(f1l+9)]
+f1n <- as.character(ped[(5:(f1l+5+1)),2])
+prefix <- c('lg','contig','position','marker','cM')
+names <- make.unique(as.character(c(prefix,f1n)))
+colnames(phasedf) <- names
+phasedf$cM <- as.numeric(phasedf$cM)
+phasedf$cM <- round(phasedf$cM,digits=3)
+phasedf$lg <- as.numeric(phasedf$lg)
+phasedf <- phasedf %>% filter(lg<=16)
+phasedf <- merge(phasedf,lgkey,by='lg')
+phasedf <- phasedf %>% select(flip,lg,new_lg,position,marker,cM,everything())
+phasedf <- phasedf[order(phasedf$lg,phasedf$cM),]
+phasedf <- split(phasedf,f=phasedf$lg)
+flipped <- lapply(phasedf, function(x) {
+    m <- max(x$cM)
+    x <- x %>% mutate(new_cM =ifelse(flip==TRUE,abs(x$cM-m),x$cM))
+    x <- x %>% select(new_cM,everything())
+    x <- x %>% mutate(cM=new_cM) %>% select(-new_cM)
+})
+flipped <- bind_rows(flipped, .id = "lg")
+flipped <- flipped %>% mutate(lg=new_lg) %>% select(-new_lg,-flip)
+flipped$lg <- as.factor(flipped$lg)
+flipped <- flipped[order(flipped$lg,flipped$cM),]
+keepmarkers <- read.table(here::here('data','keepmarkers.txt'),h=F)
+keepmarkers <- keepmarkers %>% select(V2,V3)
+colnames(keepmarkers) <- c('contig','position')
+flipped <- inner_join(flipped,keepmarkers,by=c('contig','position'))
+flipped <- flipped %>% group_by(lg) %>% mutate(new_cM=cM-min(cM)) %>% mutate(cM=new_cM) %>% select(-new_cM)
+mapping.order <- flipped %>% select(lg,contig,position,cM)
+write.table(mapping.order,here::here('data','flipped_mapping_order.txt'),quote=F,row.names=F,sep='\t')
+mapping.order.bed <- data.frame(mapping.order)
+mapping.order.bed$bed.pos <- mapping.order.bed$position-1
+mapping.order.bed <- mapping.order.bed %>% select(contig,bed.pos,position)
+write.table(mapping.order.bed,here::here('data','ovule_sites.bed'),quote=F,row.names=F,col.names=T,sep='\t')
+f2s <- flipped %>% select(lg,contig,position,marker,cM,any_of(f1n))
+f2s.parents <- f2s[,-(6:7)]
+f2s <- f2s[,-(6:9)]
+write.table(f2s,here::here('data','ovule_f2_phased_data.txt'),quote=F,row.names=F,col.names=T,sep='\t')
+write.table(f2s.parents,here::here('data','ovule_phased_data_parents.txt'),quote=F,row.names=F,col.names=T,sep='\t')
+```
+
+Some colleagues have found that LepMAP3 preferentially phases missing data as heterozygotes. Replace phases inferred by Lepmap3 with missing data as determined by genotype in vcf. 
+
+```{bash,include=TRUE,eval=FALSE}
+cd 05_filter
+module add VCFtools
+vcftools --vcf ovule_f2s.min60.max3.thinned.vcf --bed ovule_sites.bed --recode --recode-INFO-all --out ovule_f2s.finalsites
+mv ovule_f2s.finalsites.recode.vcf ovule_f2s.finalsites.vcf
+bgzip  ovule_f2s.finalsites.vcf
+tabix  ovule_f2s.finalsites.vcf.gz
+bcftools view -S ovule_samples_nomissing.txt ovule_f2s.finalsites.vcf.gz | bcftools query -f '%CHROM\t%POS\t%REF\t%ALT[\t%GT]\n' > ovule_f2s.finalsites.genotypes.txt
+```
+
+
+```{r,replace_missing_phases,echo=FALSE,eval=TRUE}
+suppressMessages(library(dplyr))
+ovule.genotypes <- read.table(here::here('data','ovule_f2s.finalsites.genotypes.txt'),h=F,sep='\t')
+ovule.phase <- read.table(here::here('data','ovule_f2_phased_data.txt'),h=T,sep='\t')
+ovule.samples <- read.table(here::here('data','ovule_samples_nomissing.txt'),h=F,sep='\t')$V1
+genotype.names <- c('contig','position','ref','alt',ovule.samples)
+colnames(ovule.genotypes) <- genotype.names
+ovule.new.phase <- ovule.phase
+common_columns <- intersect(names(ovule.genotypes), names(ovule.new.phase))
+for (col in common_columns) {
+  if (col != "contig" && col != "position") { # Assuming these are metadata columns
+    ovule.new.phase[col][ovule.genotypes[col] == "./."] <- NA
+  }
+}
+write.table(ovule.new.phase,here::here('data','ovule_f2s_phased_w_missing.txt'),quote=F,row.names=F,sep='\t')
+```
+
+Distribution of heterozygosity
+
+```{r,het_distribution,echo=TRUE,eval=TRUE}
+suppressMessages(library(dplyr))
+source('het_distribution.R')
+
+ovule.new.phase <- read.table(here('data','ovule_f2s_phased_w_missing.txt'),h=T,sep='\t')
+
+homo1a <- '2 2'
+homo1b <- 'AA'
+homo2a <- '1 1'
+homo2b <- 'BB'
+het1a <- '1 2'
+het1b <- 'AB'
+het2a <- '2 1'
+
+substitute_geno <- function(geno,homo1a,homo1b,homo2a,homo2b,het1a,het2a,het1b){
+  df <- data.frame(lapply(geno,function(x){gsub(homo1a,homo1b,x)}))
+  df <- data.frame(lapply(df,function(x){gsub(homo2a,homo2b,x)}))
+  df <- data.frame(lapply(df,function(x){gsub(het1a,het1b,x)}))
+  df <- data.frame(lapply(df,function(x){gsub(het2a,het1b,x)}))
+#  df <- data.frame(lapply(df,function(x){gsub(NA,'NN',x)}))
+  df$cM <- as.numeric(df$cM)
+  return(df)
+}
+
+ovule.geno <- substitute_geno(ovule.new.phase,homo1a,homo1b,homo2a,homo2b,het1a,het2a,het1b)
+df <- ovule.geno
+for (col in names(df)) {
+    # Replace NA with "NN" in each column
+    df[is.na(df[[col]]), col] <- "NN"
+}
+
+d1 <- draw_het_distribution(df)
+median(d1$fraction)
+mean(d1$fraction)
+min(d1$fraction)
+quantile(d1$fraction)
+write.table(ovule.geno,here::here('data','ovule_sub_genotypes.txt'),quote=F,row.names=F,sep='\t',col.names=T)
+highhet <- d1 %>% filter(fraction>=0.8) %>% select(sample)
+ovule.geno <- df %>% select(-all_of(matches(highhet$sample)))
+write.table(ovule.geno,here::here('data','ovule_sub_genotypes_missing_lowhet.txt'),quote=F,row.names=F,sep='\t')
+```
+
+### rQTL
+
+I combined the phased genotypes with the pedigree file and the linkagemap to create a file with linkage group, chromosome, position (bp), genetic distance (cM), and marker number. 
+
+I'm using a list of the mutant ovule phenotypes. "Mosaic" individuals are coded as "mutant" for the time being.
+
+```{r,create_rqtl_subsample,include=TRUE,eval=FALSE}
+ovule.geno <- read.table('ovule_sub_genotypes_missing_lowhet.txt',h=T,sep='\t')
+ovule.geno$position <- as.numeric(ovule.geno$position)
+ovule.qtl <- ovule.geno %>%
+  group_by(lg) %>%
+  arrange(position) %>%
+  filter(c(TRUE, diff(position) >= 25000))
+ovule.qtl <- ovule.qtl[order(ovule.qtl$lg,ovule.qtl$cM),]
+ovule.qtl <- ovule.qtl %>% mutate(newmarker=paste('D',lg,sep='')) %>% mutate(newmarker=paste(newmarker,'M',sep='')) %>% mutate(newmarker=paste(newmarker,position,sep='')) %>% mutate(marker=newmarker) %>% select(-newmarker,-position,-contig) %>% select(marker,lg,cM,everything())
+ovule.qtl <- ovule.qtl[order(ovule.qtl$lg,ovule.qtl$cM),]
+
+phenotypes <- read.table('FinalPhenotypeCalls.txt',h=T,sep='\t')
+sample.names <- read.table('ovule_f2_samples.txt',h=F)
+sample.names <- sample.names %>% select(-V1)  
+colnames(sample.names) <- c('PlantID','F2')
+phenotypes <- inner_join(sample.names,phenotypes,by='PlantID')
+phenotypes <- phenotypes %>% select(-PlantID)
+colnames(phenotypes)[2] <- 'phenotype'
+
+homo1 <- 'AA'
+homo2 <- 'BB'
+het <- 'AB'
+
+
+create_qtl_datasheet <- function(y,n,pheno,homo1,homo2,het){
+  y <- t(y)
+  x <- rownames(y)
+  x <- x[-(1:3)]
+  x <- c('id','','',x)
+  y <- cbind(x,y)
+  rownames(y) <- c()
+  colnames(y)[1] <- c('id')
+  y <- gsub(homo1,'A',y)
+  y <- gsub(homo2,'B',y)
+  y <- gsub(het,'H',y)
+  y <- gsub('NN','N',y)
+  colnames(y) <- c()
+  y <- data.frame(y)
+  names <- y[,1]
+  names <- names[-(1:3)]
+  names <- data.frame(names)
+  colnames(names) <- 'F2'
+  names <- inner_join(names,phenotypes,by='F2')
+  names$phenotype <- gsub('MUT',0,names$phenotype)
+  names$phenotype <- gsub('MOSAIC',0,names$phenotype)
+  names$phenotype <- gsub('WT',1,names$phenotype)
+  colnames(names)[1] <- 'id'
+  names <- names %>% select(phenotype,id)
+  outputnamegen <-paste0(n,"_quantgen.csv")
+  outputnamephen <- paste0(n,'_rqtlphen.csv')
+  write.table(x=y,outputnamegen,quote=F,row.names=F,col.names=F,sep=',')
+  write.table(x=names,outputnamephen,quote=F,row.names=F,col.names=T,sep=',')
+  return(y)
+}
+
+x <- create_qtl_datasheet(ovule.qtl,'ovule_f2s',phenotypes,homo1,homo2,het)
+write.table(x,'ovule.qtl.txt',quote=F,row.names=F,sep='\t')
+```
+

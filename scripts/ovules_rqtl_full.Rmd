@@ -1,0 +1,252 @@
+---
+title: "Ovules.Rmd"
+author: "Elen"
+date: '`r strftime(Sys.time(), format = "%B %d, %Y")`'
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE,eval=TRUE}
+require("knitr")
+library(rmarkdown)
+library(reticulate)
+library(here)
+```
+
+```{r wrap-hook,include=FALSE,eval=TRUE}
+library(knitr)
+hook_output = knit_hooks$get('output')
+knit_hooks$set(output = function(x, options) {
+  # this hook is used only when the linewidth option is not NULL
+  if (!is.null(n <- options$linewidth)) {
+    x = knitr:::split_lines(x)
+    # any lines wider than n should be wrapped
+    if (any(nchar(x) > n)) x = strwrap(x, width = n)
+    x = paste(x, collapse = '\n')
+  }
+  hook_output(x, options)
+})
+```
+
+```{r,create_rqtl_full,include=FALSE,eval=FALSE}
+suppressMessages(library(dplyr))
+ovule.geno <- read.table('ovule_sub_genotypes_missing_lowhet.txt',h=T,sep='\t')
+ovule.geno$position <- as.numeric(ovule.geno$position)
+ovule.qtl <- ovule.geno[order(ovule.geno$lg,ovule.geno$cM),]
+ovule.qtl <- ovule.qtl %>% mutate(newmarker=paste('D',lg,sep='')) %>% mutate(newmarker=paste(newmarker,'M',sep='')) %>% mutate(newmarker=paste(newmarker,position,sep='')) %>% mutate(marker=newmarker) %>% select(-newmarker,-position,-contig) %>% select(marker,lg,cM,everything())
+ovule.qtl <- ovule.qtl[order(ovule.qtl$lg,ovule.qtl$cM),]
+ovule.qtl$lg <- as.numeric(ovule.qtl$lg)
+
+phenotypes <- read.table('FinalPhenotypeCalls.txt',h=T,sep='\t')
+sample.names <- read.table('ovule_f2_samples.txt',h=F)
+sample.names <- sample.names %>% select(-V1)  
+colnames(sample.names) <- c('PlantID','F2')
+phenotypes <- inner_join(sample.names,phenotypes,by='PlantID')
+phenotypes <- phenotypes %>% select(-PlantID)
+colnames(phenotypes)[2] <- 'phenotype'
+
+homo1 <- 'AA'
+homo2 <- 'BB'
+het <- 'AB'
+
+
+create_qtl_datasheet <- function(y,n,pheno,homo1,homo2,het){
+  y <- t(y)
+  x <- rownames(y)
+  x <- x[-(1:3)]
+  x <- c('id','','',x)
+  y <- cbind(x,y)
+  rownames(y) <- c()
+  colnames(y)[1] <- c('id')
+  y <- gsub(homo1,'A',y)
+  y <- gsub(homo2,'B',y)
+  y <- gsub(het,'H',y)
+  y <- gsub('NN','-',y)
+  colnames(y) <- c()
+  y <- data.frame(y)
+  names <- y[,1]
+  names <- names[-(1:3)]
+  names <- data.frame(names)
+  colnames(names) <- 'F2'
+  names <- inner_join(names,phenotypes,by='F2')
+  names$phenotype <- gsub('MUT',0,names$phenotype)
+  names$phenotype <- gsub('MOSAIC',0,names$phenotype)
+  names$phenotype <- gsub('WT',1,names$phenotype)
+  colnames(names)[1] <- 'id'
+  names <- names %>% select(phenotype,id)
+  outputnamegen <-paste0(n,"_quantgen.csv")
+  outputnamephen <- paste0(n,'_rqtlphen.csv')
+  write.table(x=y,outputnamegen,quote=F,row.names=F,col.names=F,sep=',')
+  write.table(x=names,outputnamephen,quote=F,row.names=F,col.names=T,sep=',')
+  return(y)
+}
+
+x <- create_qtl_datasheet(ovule.qtl,'ovule_f2s',phenotypes,homo1,homo2,het)
+write.table(x,'ovule.qtl.txt',quote=F,row.names=F,sep='\t')
+```
+
+We import these files into rQTL. We reestimate the map and get a "new" map, which is not surprising since each marker is the median position for that genetic distance.
+
+This new map is used to do a scan for the major effect QTL using an imputation. 
+
+```{r rqtl,include=FALSE,eval=FALSE}
+suppressMessages(library(dplyr))
+suppressMessages(library(qtl))
+ovule.cross <- read.cross('csvs',dir='',genfile='ovule_f2s_quantgen.csv',phefile='ovule_f2s_rqtlphen.csv',genotypes=c("A","H","B"),alleles=c("A","B"),na.strings=c("-"))
+saveRDS(ovule.cross,'ovule.cross')
+summary(ovule.cross)
+plot(ovule.cross)
+ovule.cross <- jittermap(ovule.cross,amount=1e-4)
+newmap <- est.map(ovule.cross, error.prob=0.01,verbose=TRUE)
+plotMap(ovule.cross, newmap)
+saveRDS(newmap,'ovule.newmap')
+```
+
+```{r,plot_map,echo=TRUE,eval=TRUE}
+suppressMessages(library(qtl))
+oldmap <- readRDS('ovule.cross')
+newmap <- readRDS('ovule.newmap')
+plotMap(oldmap,newmap)
+plotMap(newmap)
+```
+
+```{r,est_map,echo=FALSE,eval=FALSE}
+suppressMessages(library(qtl))
+ovule.cross <- readRDS('ovule.cross')
+ovule.rf <- est.rf(ovule.cross)
+plotRF(ovule.rf)
+newmap2 <- est.map(ovule.rf,verbose=TRUE)
+plotMap(ovule.cross,newmap2)
+saveRDS(newmap2,'ovule.rf.newmap')
+```
+
+```{r replace_map,echo=TRUE,eval=FALSE}
+library(qtl)
+newmap <- readRDS('ovule.newmap')
+ovule.cross <- readRDS('ovule.cross')
+plotMap(ovule.cross, newmap)
+ovule.cross <- calc.errorlod(ovule.cross, error.prob=0.01)
+errorlod1 <- data.frame(top.errorlod(ovule.cross))
+write.table(errorlod1,'ovule.toperror1.lod.txt',quote=F,row.names=F,sep='\t')
+ovule.cross.newmap <- replace.map(ovule.cross, newmap)
+saveRDS(ovule.cross.newmap,'ovule.cross.newmap')
+ovule.cross.newmap <- calc.errorlod(ovule.cross.newmap,error.prob = 0.01)
+errorlod2 <- data.frame(top.errorlod(ovule.cross.newmap))
+write.table(errorlod2,'ovule.toperror2.lod.txt',quote=F,row.names=F,sep='\t')
+
+ovule.cross.newmap <- calc.genoprob(ovule.cross.newmap, step=1, error.prob=0.01)
+ovule.cross.newmap <- est.rf(ovule.cross.newmap)
+saveRDS(ovule.cross.newmap,'ovule.cross.full.prescan')
+```
+
+```{r,include=FALSE,eval=FALSE}
+library(qtl)
+ovule.cross.newmap <- readRDS('ovule.cross.full.prescan')
+ovule.cross.newmap <- sim.geno(ovule.cross.newmap,step=1,n.draws=1000,off.end=2,error.prob=0.001)
+saveRDS(ovule.cross.newmap,'ovule.cross.full.postscan')
+```
+
+```{r,scanone_qtl_hk,echo=TRUE,eval=FALSE}
+suppressMessages(library(qtl))
+ovule.cross <- readRDS('ovule.cross.full.prescan')
+out.hk <- scanone(ovule.cross,method='hk',model='binary')
+saveRDS(out.hk,'out.full.hk')
+```
+
+Final method: EM algorithm of with 1,000 permutations used to determine LOD score cutoff.
+
+```{r,em_permutations,echo=TRUE,eval=FALSE}
+suppressMessages(library(qtl))
+ovule.cross.newmap <- readRDS('ovule.cross.full.postscan')
+operm.em <- scanone(ovule.cross.newmap,model='binary',method='em',n.perm=1000)
+saveRDS(operm.em,'operm.full.em')
+plot(operm.em)
+```
+
+```{r,save_lod,echo=TRUE,eval=FALSE}
+suppressMessages(library(qtl))
+operm.em <- readRDS('operm.full.em')
+lodcutoff <- data.frame(operm.em)
+lodcutoff <- lodcutoff[order(-lodcutoff),]
+lodcutoff <- data.frame(lodcutoff)
+write.table(lodcutoff,'lodcutoff.emscan.txt',quote=F,row.names=F,sep='\t')
+```
+
+```{r,scanone_qtl_em,echo=TRUE,eval=FALSE}
+suppressMessages(library(qtl))
+ovule.cross.newmap <- readRDS('ovule.cross.full.postscan')
+out.em <- scanone(ovule.cross.newmap,model='binary',method='em')
+plot(out.em)
+saveRDS(out.em,'out.full.em')
+write.table(out.em,'out.full.emresults.txt',quote=F,row.names=F,sep='\t')
+```
+
+
+```{r save-plot, echo=TRUE,eval=TRUE}
+suppressMessages(library(qtl))
+out.em <- readRDS('out.full.em')
+operm.em <- readRDS('operm.full.em')
+lodcutoff <- data.frame(operm.em)
+lodcutoff <- lodcutoff[order(-lodcutoff),]
+lodcutoff <- lodcutoff[10]
+#plot
+plot(out.em,main='QTL Scan of mutant ovule phenotype',ylab='LOD score')
+abline(h = lodcutoff, col = "red", lwd = 2, lty = 2)
+arrows(x0 = 300, y0 = 10, x1 = 100, y1 = 12.5, col = "blue", lwd = 2, length = 0.1, angle = 20)
+text(x = 200, y = 9, labels = "BEL1", col = "blue", pos = 4)
+# Save plot as a JPEG file in landscape orientation
+jpeg("QTLplot.jpeg", width = 5.5, height = 4, units = "in", res = 300)
+plot(out.em,main='QTL Scan of mutant ovule phenotype',ylab='LOD score')
+abline(h = lodcutoff, col = "red", lwd = 2, lty = 2)
+arrows(x0 = 300, y0 = 10, x1 = 100, y1 = 12.5, col = "blue", lwd = 2, length = 0.1, angle = 20)
+text(x = 200, y = 9, labels = "BEL1", col = "blue", pos = 4)
+# Close the file device
+dev.off()
+```
+
+
+F2.18 (5D) was encoded as both mutant and wildtype but didn't have enough sequence data to be included in the linkage map.
+
+```{r,scantwo,echo=TRUE,eval=FALSE}
+suppressMessages(library(qtl))
+ovule.cross.newmap <- readRDS('ovule.cross.full.postscan')
+ovule.cross.err2 <- calc.genoprob(ovule.cross.newmap,step=5,error.prob=0.01)
+saveRDS(ovule.cross.err2,'ovule.cross.err2')
+out2.full.em <- scantwo(ovule.cross.err2, method="em",model='binary',pheno.col='phenotype')
+saveRDS(out2.full.em,'out2.full.em')
+```
+
+```{r,scantwo_perm,echo=TRUE,eval=FALSE}
+suppressMessages(library(qtl))
+ovule.cross.err2 <- readRDS('ovule.cross.err2')
+out2.full.em <- readRDS('out2.full.em')
+operm2.em <- scantwo(ovule.cross.err2, method="em", model='binary',pheno.col = "phenotype", n.perm=1000)
+saveRDS(operm2.em,'operm2.em')
+```
+
+```{r,compare_models,echo=TRUE,eval=TRUE}
+suppressMessages(library(qtl))
+ovule.cross.err2 <- readRDS('ovule.cross.err2')
+out2.full.em <- readRDS('out2.full.em')
+operm2.em <- readRDS('operm2.em')
+plot(out2.full.em)
+summary(out2.full.em)
+max(out2.full.em)
+summary(operm2.em)
+
+chr <- c(' 1',' 2')
+pos <- c(35,30)
+qtl <- makeqtl(ovule.cross.err2,chr,pos)
+summary(qtl)
+out.fitqtl <- fitqtl(ovule.cross.err2, qtl=qtl,
+       formula = y ~ Q1 + Q2 + Q1*Q2,
+       method  = "imp", model = "binary")
+saveRDS(out.fitqtl,'out.fitqtl')
+summary(out.fitqtl)
+rqtl <- refineqtl(ovule.cross.err2, qtl=qtl, formula=y~Q1+Q2+Q1*Q2, verbose=FALSE)
+rqtl 
+out.fq2 <- fitqtl(ovule.cross.err2, qtl=rqtl, formula=y~Q1+Q2+Q1*Q2, dropone=FALSE)
+summary(out.fq2)
+plotLodProfile(rqtl)
+```
+
