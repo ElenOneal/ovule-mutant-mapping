@@ -6,14 +6,14 @@ This document outlines the complete analysis pipeline for QTL mapping in the ovu
 
 Create conda environments before starting:
 ```bash
-conda env create -f environment/linkage-mapping_environment.yml
+   conda env create -f environment/linkage-mapping_environment.yml
    conda env create -f environment/py2_environment.yml
    conda env create -f environment/linkage-mapping_rmd.yml
 ```
 
 Activate the main environment:
 ```bash
-conda activate linakge-mapping
+conda activate linkage-mapping
 ```
 
 - **Git:** Ensure you have Git installed. [Download Git](https://git-scm.com/downloads)
@@ -53,30 +53,28 @@ conda activate linakge-mapping
 Activate `py2` environment for Python 2.7 compatibility:
 ```bash
 conda activate py2
-bash scripts/rmdup.sh data/ovule_library_filenames.txt 01_rawreads/
-for file in *.rmdup.sh; do sbatch $file; done
+./rmdup.sh data/ovule_library_filenames.txt 01_rmdup common
+for file in rmdup_*.sh; do sbatch $file; done
 ```
 Output: Deduplicated reads with `*rmdup*.gz`
 
 ### 1.3 Flip Reads (BeRAD protocol)
 ```bash
-conda activate py2
-bash scripts/flip.sh data/ovule_library_filenames.txt 02_flipreads/
+./flip.sh data/ovule_library_filenames.txt 02_flipreads common
 for file in *.flip.sh; do sbatch $file; done
 ```
 Output: `filtered_forward.fastq` and `filtered_reverse.fastq` per sample
 
 ### 1.4 Trim and Extract Barcodes
 ```bash
-bash scripts/trim_ddrad.sh data/ovule_library_filenames.txt 02_flipreads/
-for file in *.trim.sh; do sbatch $file; done
+./process_radtags.sh data/ovule_library_filenames.txt 02_flipreads common
+for file in *.radtags.sh; do sbatch $file; done
 ```
 Move trimmed reads to alignment directory:
 ```bash
 mkdir 03_align
 mv 02_flipreads/*/*.1.fq.gz 03_align/
 mv 02_flipreads/*/*.2.fq.gz 03_align/
-rm 03_align/*rem*.fq.gz
 ```
 
 ---
@@ -85,22 +83,24 @@ rm 03_align/*rem*.fq.gz
 
 ### 2.1 Trim and Align F2 Samples
 ```bash
-bash scripts/trim_align_ovules.sh data/ovule_barcode_key.txt 03_align/ /path/to/genome/ Mguttatus.IM767.v2.fa
-bash scripts/rg_ovules.sh data/ovule_barcode_key.txt 03_align/ /path/to/picard.jar /path/to/genome/ Mguttatus.IM767.v2.fa
+./align_f2s.sh data/ovule_barcode_key.txt 03_align genome_dir Mguttatus.IM767.v2.fa common
+./rg_f2s.sh data/ovule_barcode_key.txt 03_align picard_location genome_dir Mguttatus.IM767.v2.fa common
 ```
 
 ### 2.2 Process Parent Reads
 ```bash
-bash scripts/trim_parents.sh data/ovule_genome_sequence_files.txt /parent_raw_reads/ /parent_clean_reads/ 03_align/
-bash scripts/align_parents.sh data/ovule_genome_sequence_files.txt 03_align/ /parent_clean_reads/ /path/to/genome/ Mguttatus.IM767.v2.fa
-bash scripts/rg_ovule_parents.sh data/ovule_genome_sequence_files.txt 03_align/ /path/to/picard.jar /path/to/genome/ Mguttatus.IM767.v2.fa
+./align_parents.sh data/ovule_genome_sequence_files.txt 03_align 00_parent_reads genome_dir Mguttatus.IM767.v2.fa common
+./rg_parents.sh data/ovule_genome_sequence_files.txt 03_align/ picard_location common
+```
+
+### 2.2b Create F1 Read Groups
+```bash
+./f1_readgroups.sh
 ```
 
 ### 2.3 Call SNPs with bcftools
 ```bash
-bash scripts/bcftools_ovules.sh im767.v2.list bamlist.txt 04_bcftools/ /path/to/genome/ Mguttatus.IM767.v2.fa ovule_f2s
-cd 04_bcftools/
-bcftools concat -f vcffiles_snpsonly.txt -Ov -o ovule_f2s.snps_only.vcf
+./bcftools.sh im767.v2.list bamlist.txt 04_bcftools/ genome_dir Mguttatus.IM767.v2.fa ovule_f2s common
 ```
 
 ---
@@ -112,16 +112,16 @@ bcftools concat -f vcffiles_snpsonly.txt -Ov -o ovule_f2s.snps_only.vcf
 cd 05_filter/
 module add VCFtools
 vcftools --vcf ovule_f2s.snps_only.vcf --missing-indv
-python scripts/filter_vcf_for_lepmap3_ovule_cross.py \
+python filter_vcf_for_lepmap3_ovule_cross.py \
   --invcf ovule_f2s.snps_only.vcf \
   --ParentList ovule_parents.txt \
-  --SampleList ovule_samples.txt \
   --out ovule_f2s.min60 \
   --minMapQ 20 \
   --filterInbredParents True \
   --filterforhets True \
-  --minparentdepth --maxparentdepth \
-  --missingList ovule_f2s.frac_missing_data.txt \
+  --minparentdepth True \
+  --maxparentdepth True \
+  --missingList ovule_f2s.min60.max3.frac_missing_data.txt \
   --MaxMissingData 1 \
   --filterMissingParents True \
   --FractionF2 60 \
@@ -139,23 +139,25 @@ Build `ovule.ped.txt` with grandparents (DHRO22, GMR2) and F1s as cross parents.
 
 ---
 
-## Step 4: Linkage Map Assembly with LepmAP3
+## Step 4: Linkage Map Assembly with LepMAP3
 
-### 4.1 Run LepmAP3 Pipeline
+### 4.1 Run LepMAP3 Pipeline
 ```bash
-bash scripts/lepmap10.20.0.0001.sh
+cd 05_filter/
+./lepmap.sh
 ```
-This runs (in sequence):
+This runs (in sequence via the wrapper script, with LOD=10, theta=0.20, dT=0.0001):
 - `ParentCall2` – Phase parental genotypes
-- `Filtering2` – Filter informative markers
-- `SeparateChromosomes2` – Group markers into linkage groups (LOD 10, theta 0.20)
+- `Filtering2` – Filter informative markers by data tolerance threshold
+- `SeparateChromosomes2` – Group markers into linkage groups
 - `OrderMarkers2` – Order markers within groups
 
-Output: `order.10.20.0.0001.id.ovule_f2s.txt` (mapped markers with cM positions)
+Output: `order.10.20.0.0001.ovule_f2s.txt` (mapped markers with cM positions)
 
 ### 4.2 Extract Phased Genotypes
 ```bash
-awk -vfullData=1 -f map2genotypes.awk order.10.20.0.0001.id.ovule_f2s.txt > ovule_f2s.10.20.phase1.txt
+python split_lepmap.py order.10.20.0.0001.ovule_f2s.mapped ovule_f2s.10.20 False
+awk -vfullData=1 -f $LEPMAP_DIR/map2genotypes.awk order.10.20.0.0001.ovule_f2s.txt > ovule_f2s.10.20.phase.txt
 ```
 
 ---
@@ -187,21 +189,22 @@ ovule.qtl <- ovule.geno %>%
 ## Step 6: QTL Analysis with rqtl
 
 ### 6.1 Prepare rqtl Input Files
-Create from phased genotypes and phenotypes:
-- `ovule_f2s_quantgen.csv` – Genotypes in rqtl format
-- `ovule_f2s_rqtlphen.csv` – Phenotypes (WT=1, MUT=0)
+Generated in `Ovules.Rmd` from phased genotypes and phenotypes (see `create_rqtl_subsample` chunk):
+- `data/ovule_f2s_quantgen.csv` – Subsampled genotypes in rqtl format (1 marker per 25 kb)
+- `data/ovule_f2s_rqtlphen.csv` – Phenotypes (WT=1, MUT/MOSAIC=0)
 
-### 6.2 Run QTL Mapping
-Open and render `scripts/Ovules.Rmd`:
+### 6.2 Run QTL Mapping (Optional)
+Open and render `Rqtl.Rmd` for full EM-based QTL mapping with permutation tests:
 ```bash
-cd scripts/
-Rscript -e "rmarkdown::render('Ovules.Rmd')"
+conda activate linkage-mapping_rmd
+Rscript -e "rmarkdown::render('Rqtl.Rmd')"
 ```
 
 Outputs:
-- `ovules_rqtl_full.html` – QTL scan results and plots
-- LOD scores and QTL positions
-- Linkage group plots
+- QTL scan plots and LOD scores
+- Permutation-derived significance thresholds
+- Two-dimensional scan results
+- Model comparison and QTL refinement results
 
 ---
 
@@ -214,6 +217,7 @@ Outputs:
 | `data/FinalPhenotypeCalls.txt` | Phenotypic calls (WT/MUT/MOSAIC) |
 | `data/ovule_sites.bed` | Final SNP positions used in QTL analysis |
 | `ovule.qtl.txt` | QTL mapping results summary |
+| `ovule_sub_genotypes_missing_lowhet.txt` | Phased genotype data |
 
 ---
 
@@ -229,7 +233,8 @@ Outputs:
 
 ## Notes
 
-- **Conda environments:** Use `linkage-mapping` for main pipeline, `py2` for deaggregation only
-- **LepmAP3 parameters:** LOD 10, theta 0.20 produced best map (see Ovules.Rmd for justification)
-- **Marker filtering:** Thinned to 150 bp spacing before LepmAP3, then 25 kb for QTL to reduce computation
-- **F2 phenotyping:** Medusa mutants segregate at ~25–30% as expected for single locus
+- **Conda environments:** Use `linkage-mapping` for main pipeline, `py2` for Python 2 scripts, `linkage-mapping_rmd` for report rendering
+- **LepMAP3 parameters:** LOD 10, theta 0.20, data tolerance 0.0001 produced best map (see `Linkage_map_assembly.Rmd` for justification)
+- **Marker filtering:** Biallelic sites only before LepMAP3; genotype calls limited to 3 alleles max; markers thinned to 150 bp for initial scan
+- **QTL marker subset:** Thinned to 25 kb spacing to reduce computation; phased genotypes tested for missing data calls
+- **F2 phenotyping:** Ovule mutant phenotype segregates at ~25–30% consistent with single-locus Mendelian inheritance
