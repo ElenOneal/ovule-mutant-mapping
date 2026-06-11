@@ -1,0 +1,12 @@
+*.rds
+.Rhistory
+.RData
+*.log
+output/
+tmp/
+
+toadd/
+backup/
+.RDataTmp
+.DS_Store
+

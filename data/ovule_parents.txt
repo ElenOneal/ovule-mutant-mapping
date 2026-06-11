@@ -1,0 +1,4 @@
+ParentName	Duplicate	Type	Mindepth	MaxDepth	Direction
+DHRO22	Y	Inbred	8	500	GP1
+GMR2	Y	Inbred	8	500	GP2
+PseudoF1	Y	F1	16	1000	Mom
