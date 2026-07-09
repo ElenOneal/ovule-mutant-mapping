@@ -4,14 +4,15 @@
 
 
 # Check if the correct number of arguments is provided
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 library_filenames DIR"
+if [ "$#" -ne 3 ]; then
+  echo "Usage: $0 library_filenames DIR partition"
     exit 1
 fi
 
 # Assign arguments to variables
 file_name="$1"
 DIR="$2"
+partition="$3"
 
 # Check if the input file exists
 if [ ! -f "$file_name" ]; then
@@ -32,7 +33,7 @@ while IFS=$'\t' read -r a; do
     echo "#SBATCH --error=${a}.flip.err"
     echo '#SBATCH --cpus-per-task=1'
     echo '#SBATCH --account=biodept'
-    echo '#SBATCH -p common'
+    echo "#SBATCH -p $partition"
     echo "#SBATCH --chdir=$DIR/$a"
     echo '#SBATCH --mem=2G'
     echo ''
@@ -43,4 +44,4 @@ while IFS=$'\t' read -r a; do
     echo "gzip *fastq"
   } > "$script_file"
 done < "$file_name"
-``
+

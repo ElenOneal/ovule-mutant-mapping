@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Check if the correct number of arguments is provided
-if [ "$#" -ne 5 ]; then
-    echo "Usage: $0 sequences.txt DIR read_dir genome_dir genome"
+if [ "$#" -ne 6 ]; then
+  echo "Usage: $0 sequences.txt DIR read_dir genome_dir genome partition"
     exit 1
 fi
 
@@ -12,6 +12,7 @@ DIR="$2"
 read_dir="$3"
 genome_dir="$4"
 genome="$5"
+partition="$6"
 
 # Check if the input file exists
 if [ ! -f "$file_name" ]; then
@@ -32,7 +33,7 @@ while IFS=$'\t' read -r f c a b d; do
     echo "#SBATCH --error=${a}.align.err"
     echo '#SBATCH --cpus-per-task=6'
     echo '#SBATCH --account=biodept'
-    echo '#SBATCH -p common,biodept'
+    echo "#SBATCH -p $partition"
     echo "#SBATCH --chdir=$DIR"
     echo '#SBATCH --mem=24G'
     echo ''
@@ -41,5 +42,4 @@ while IFS=$'\t' read -r f c a b d; do
     echo "sbatch $a.filter.sh"
   } > "$script_file"
 done < "$file_name"
-``
 

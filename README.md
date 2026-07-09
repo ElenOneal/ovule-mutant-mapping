@@ -6,6 +6,8 @@ The Medusa Mutant Disrupts Ovule Integument and Female Gametophyte Development i
 
 Authors: Miguel Flores-Vergara, Albert Tucci, Elen Oneal, Alessandro Ruiu, other authors,  Robert G. Franks* (final authorship to be determined)
 
+
+
 ## Table of Contents
 
 - [Project Overview](#project-overview)
@@ -76,44 +78,104 @@ These instructions will help you set up the project on your local machine.
 
 - `Linkage_map_assembly.Rmd`: R Markdown documenting NGS pipeline.
 - `Rqtl.Rmd`: R markdown documenting rQTL analysis.
-- `data/ovule.cross`: R/qtl cross object.
-- `data/FinalPhenotypeCalls.txt`: Phenotypic data for F2 individuals.
+- `WORKFLOW.md`: Step-by-step pipeline notes for running the full analysis.
+- `scripts/ovules_rqtl_full.Rmd`: Expanded in-repo rQTL analysis notebook.
 
 ## Usage
 
 ### Main Analysis Workflow
+    ```bash
+    bash scripts/rmdup.sh data/ovule_library_filenames.txt 01_rmdup common
+    bash scripts/flip.sh data/ovule_library_filenames.txt 02_flipreads common
+    bash scripts/process_radtags.sh data/ovule_library_filenames.txt 02_flipreads common
+    bash scripts/align_f2s.sh data/ovule_barcode_key.txt 03_align /path/to/genome_dir Mguttatus.IM767.v2.fa common
+    bash scripts/rg_f2s.sh data/ovule_barcode_key.txt 03_align /path/to/picard.jar /path/to/genome_dir Mguttatus.IM767.v2.fa common
+    ```
 
-1. **Data Preprocessing:**
-   - Run shell scripts in `scripts/` for sequence alignment and barcode processing:
-     ```bash
-     bash scripts/trim_ddrad.sh
-     bash scripts/trim_parents.sh
-     bash scripts/align_parents.sh
-     bash scripts/rg_ovules.sh
-     ```
+2. **Process parent reads:**
+    ```bash
+    bash scripts/align_parents.sh data/ovule_genome_sequence_files.txt 03_align /path/to/parent_fastqs /path/to/genome_dir Mguttatus.IM767.v2.fa common
+    bash scripts/rg_parents.sh data/ovule_genome_sequence_files.txt 03_align /path/to/picard.jar common
+    ```
 
-2. **Genotyping and Mapping:**
-   - Use `scripts/lepmap10.20.0.0001.sh` to run LepmAP3 for linkage mapping.
-   - Run `scripts/bcftools_ovules.sh` to filter VCF files.
+3. **Variant calling:**
+    ```bash
+    bash scripts/bcftools.sh data/im767.v2.list data/bamlist.txt 04_bcftools /path/to/genome_dir Mguttatus.IM767.v2.fa ovule_f2s common
+    ```
 
-3. **QTL Analysis:**
-   - Open `scripts/Ovules.Rmd` in RStudio to run the main QTL mapping analysis.
-   - Render with:
-     ```bash
-     Rscript -e "rmarkdown::render('Ovules.Rmd')"
-     ```
-   - Alternative analysis in `scripts/ovules_rqtl_full.Rmd`.
+4. **VCF filtering and LepMap3 preparation:**
+    ```bash
+    python scripts/filter_vcf_for_lepmap3_ovule_cross.py \
+       --invcf 04_bcftools/Chr_01.ovule_f2s.snps_only.vcf.gz \
+       --ParentList data/ovule_parents.txt \
+       --SampleList data/ovule_f2_samples.txt \
+       --out ovule_f2s.min60 \
+       --minMapQ 20 \
+       --filterMissingParents True \
+       --filterInbredParents True \
+       --filterforhets True \
+       --minparentdepth True \
+       --maxparentdepth True \
+       --FractionF2 60 \
+       --minF2depth 4 \
+       --missingList data/ovule_f2s.min60.max3.frac_missing_data.txt \
+       --MaxMissingData 1
+    ```
 
-4. **Results:**
-   - Output figures and tables are saved to `figs/` and root directory.
-   - See `ovule.qtl.txt` for QTL summary results.
+5. **Linkage map assembly:**
+    ```bash
+    bash scripts/lepmap.sh -p ovule_f2s.min60.max3 -o ovule_f2s -l 10 -t .20 -q common
+    ```
+    Then parse ordered markers:
+    ```bash
+    python scripts/split_lepmap.py order.10.20.0.0001.ovule_f2s.txt ovule_f2s.10.20 False
+    ```
+
+6. **QTL analysis:**
+    - Render `Rqtl.Rmd` from repository root:
+       ```bash
+       conda activate linkage-mapping_rmd
+       Rscript -e "rmarkdown::render('Rqtl.Rmd')"
+       ```
+    - Alternative full analysis is in `scripts/ovules_rqtl_full.Rmd`.
+
+### Script Arguments (Current)
+
+- `scripts/rmdup.sh`
+   - `library_filenames DIR partition [time] [mem]`
+- `scripts/flip.sh`
+   - `library_filenames DIR partition`
+- `scripts/process_radtags.sh`
+   - `library_filenames DIR partition`
+- `scripts/align_f2s.sh`
+   - `sample_names DIR genome_dir genome partition`
+- `scripts/rg_f2s.sh`
+   - `sample_names DIR picard genome_dir genome partition`
+- `scripts/align_parents.sh`
+   - `sequences.txt DIR read_dir genome_dir genome partition`
+- `scripts/rg_parents.sh`
+   - `sequences.txt DIR picard partition`
+- `scripts/bcftools.sh`
+   - `listfiles bamfiles DIR genome_dir genome prefix partition`
+- `scripts/filter_vcf_for_lepmap3_ovule_cross.py`
+   - Required flags:
+      - `--invcf --ParentList --SampleList --out --minMapQ --minF2depth --missingList --MaxMissingData`
+   - Optional boolean flags:
+      - `--filterMissingParents --filterInbredParents --filterforhets --minparentdepth --maxparentdepth`
+   - Optional threshold:
+      - `--FractionF2` (default `0`)
+- `scripts/lepmap.sh`
+   - `[-p PRE] [-o OUT] [-l LOD] [-t THETA] [-q PARTITION]`
+   - Note: the script header mentions `-d`, but the current option parser does not accept `-d`.
+- `scripts/split_lepmap.py`
+   - `mapping_order_file outprefix minorscafs`
 
 ### Data Files
 
 - **Input data:** Located in `data/`
-- **Genotypes:** `ovule_f2s.finalsites.genotypes.txt`, `ovule_sub_genotypes.txt`
-- **Phenotypes:** `FinalPhenotypeCalls.txt`
-- **Maps:** `ovule.newmap`, `ovule.cross`
+- **Genotypes:** `ovule_f2s.finalsites.genotypes.txt`, `ovule_sub_genotypes_missing_lowhet.txt`
+- **Sample metadata:** `ovule_f2_samples.txt`, `ovule_barcode_key.txt`, `ovule_parents.txt`
+- **Marker/site references:** `im767.v2.list`, `ovule_sites.bed`
 
 ## Dependencies
 
