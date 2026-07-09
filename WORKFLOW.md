@@ -13,7 +13,7 @@ Create conda environments before starting:
 
 Activate the main environment:
 ```bash
-conda activate linkage-mapping
+conda activate f1mapping
 ```
 
 - **Git:** Ensure you have Git installed. [Download Git](https://git-scm.com/downloads)
@@ -37,7 +37,7 @@ conda activate linkage-mapping
 
 3. **Activate the linkage mapping environment:**
    ```bash
-   conda activate linakge-mapping
+   conda activate f1mapping
    ```
 
 
@@ -102,6 +102,16 @@ mv 02_flipreads/*/*.2.fq.gz 03_align/
 ```bash
 ./bcftools.sh im767.v2.list bamlist.txt 04_bcftools/ genome_dir Mguttatus.IM767.v2.fa ovule_f2s common
 ```
+This produces one SNP-only VCF per chromosome, e.g. `04_bcftools/Chr_01.ovule_f2s.snps_only.vcf.gz`.
+
+### 2.4 Concatenate per-chromosome VCFs
+```bash
+./concatenate_vcfs.sh im767.v2.list ovule_f2s 04_bcftools/ common
+sbatch 04_bcftools/ovule_f2s.concat.sh
+```
+Reuses the same `im767.v2.list` and `ovule_f2s` prefix passed to `bcftools.sh` to merge the per-chromosome VCFs into one genome-wide file and unpack a plain-text copy. `filter_vcf_for_lepmap3_ovule_cross.py` reads `--invcf` with plain `open()` (not `gzip.open()`), so the plain-text copy is required.
+
+Output: `04_bcftools/ovule_f2s.snps_only.vcf.gz` (+ `.tbi` index) and `04_bcftools/ovule_f2s.snps_only.vcf` (plain text, used in Step 3.1)
 
 ---
 
@@ -109,12 +119,15 @@ mv 02_flipreads/*/*.2.fq.gz 03_align/
 
 ### 3.1 Initial VCF Filtering
 ```bash
+mkdir -p 05_filter
+cp 04_bcftools/ovule_f2s.snps_only.vcf 05_filter/
 cd 05_filter/
 module add VCFtools
 vcftools --vcf ovule_f2s.snps_only.vcf --missing-indv
-python filter_vcf_for_lepmap3_ovule_cross.py \
+python ../scripts/filter_vcf_for_lepmap3_ovule_cross.py \
   --invcf ovule_f2s.snps_only.vcf \
-  --ParentList ovule_parents.txt \
+  --ParentList ../data/ovule_parents.txt \
+  --SampleList ../data/ovule_f2_samples.txt \
   --out ovule_f2s.min60 \
   --minMapQ 20 \
   --filterInbredParents True \
@@ -144,28 +157,33 @@ Build `ovule.ped.txt` with grandparents (DHRO22, GMR2) and F1s as cross parents.
 ### 4.1 Run LepMAP3 Pipeline
 ```bash
 cd 05_filter/
-./lepmap.sh
+./lepmap.sh -o ovule_f2s -l 10 -t .20 -s False
 ```
-This runs (in sequence via the wrapper script, with LOD=10, theta=0.20, dT=0.0001):
+This writes a SLURM job script (`lepmap10.20.0.0001.sh`) that runs, in sequence, with LOD=10, theta=0.20, dT=0.0001:
 - `ParentCall2` – Phase parental genotypes
 - `Filtering2` – Filter informative markers by data tolerance threshold
 - `SeparateChromosomes2` – Group markers into linkage groups
 - `OrderMarkers2` – Order markers within groups
+- Re-map marker IDs to contig/position (`OrderMarkers2` identifies markers by an internal index, not contig/position; see `Linkage_map_assembly.Rmd` for the underlying logic) and split into per-linkage-group output via `split_lepmap.py`
+- Convert to phased genotype calls via `map2genotypes.awk`
 
-Output: `order.10.20.0.0001.ovule_f2s.txt` (mapped markers with cM positions)
-
-### 4.2 Extract Phased Genotypes
+Submit it, and wait for it to finish before continuing:
 ```bash
-python split_lepmap.py order.10.20.0.0001.ovule_f2s.mapped ovule_f2s.10.20 False
-awk -vfullData=1 -f $LEPMAP_DIR/map2genotypes.awk order.10.20.0.0001.ovule_f2s.txt > ovule_f2s.10.20.phase.txt
+sbatch lepmap10.20.0.0001.sh
 ```
+
+Output:
+- `order.10.20.0.0001.ovule_f2s.txt` — raw `OrderMarkers2` output (markers by internal index)
+- `order.10.20.0.0001.ovule_f2s.mapped` — re-mapped to contig/position
+- `ovule_f2s.10.20_mappingorder.txt` — per-linkage-group mapping order (mapped markers with cM positions)
+- `ovule_f2s.10.20.phase.txt` — phased genotypes
 
 ---
 
 ## Step 5: Data Curation and QTL Preparation
 
 ### 5.1 Replace Missing Data Calls
-Run in R (within `scripts/Ovules.Rmd`):
+Run in R (within `Linkage_map_assembly.Rmd`, `replace_missing_phases` chunk):
 - Replace LepMAP3 phased missing calls with actual VCF calls
 - Output: `ovule_f2s_phased_w_missing.txt`
 
@@ -189,7 +207,7 @@ ovule.qtl <- ovule.geno %>%
 ## Step 6: QTL Analysis with rqtl
 
 ### 6.1 Prepare rqtl Input Files
-Generated in `Ovules.Rmd` from phased genotypes and phenotypes (see `create_rqtl_subsample` chunk):
+**Not included in this public repository pending publication** (see Data Access in README.md). This step subsamples phased genotypes and phenotypes into rqtl format, producing:
 - `data/ovule_f2s_quantgen.csv` – Subsampled genotypes in rqtl format (1 marker per 25 kb)
 - `data/ovule_f2s_rqtlphen.csv` – Phenotypes (WT=1, MUT/MOSAIC=0)
 
@@ -226,7 +244,7 @@ Outputs:
 - `01_rawreads/` – Deduplicated fastq files
 - `02_flipreads/` – Flipped, protocol-corrected reads
 - `03_align/` – Aligned BAM files and read groups
-- `04_bcftools/` – VCF files (SNPs only)
+- `04_bcftools/` – Per-chromosome and concatenated genome-wide VCFs (SNPs only)
 - `05_filter/` – Filtered VCF and mapping order
 
 ---

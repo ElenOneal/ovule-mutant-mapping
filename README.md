@@ -63,7 +63,7 @@ These instructions will help you set up the project on your local machine.
 
 3. **Activate the linkage mapping environment:**
    ```bash
-   conda activate linkage-mapping
+   conda activate f1mapping
    ```
 
 ## Repository Structure
@@ -102,11 +102,19 @@ These instructions will help you set up the project on your local machine.
     ```bash
     bash scripts/bcftools.sh data/im767.v2.list data/bamlist.txt 04_bcftools /path/to/genome_dir Mguttatus.IM767.v2.fa ovule_f2s common
     ```
+    This produces one SNP-only VCF per chromosome (e.g. `04_bcftools/Chr_01.ovule_f2s.snps_only.vcf.gz`).
 
-4. **VCF filtering and LepMap3 preparation:**
+4. **Concatenate per-chromosome VCFs:**
+    ```bash
+    bash scripts/concatenate_vcfs.sh data/im767.v2.list ovule_f2s 04_bcftools common
+    sbatch 04_bcftools/ovule_f2s.concat.sh
+    ```
+    Reuses the same `listfiles` file passed to `bcftools.sh` (must have the same `prefix`, here `ovule_f2s`) to merge the per-chromosome `snps_only.vcf.gz` files into one genome-wide VCF, then unpacks a plain-text copy: `04_bcftools/ovule_f2s.snps_only.vcf`. The uncompressed copy is required because `filter_vcf_for_lepmap3_ovule_cross.py` reads `--invcf` with plain `open()`, not `gzip.open()`.
+
+5. **VCF filtering and LepMap3 preparation:**
     ```bash
     python scripts/filter_vcf_for_lepmap3_ovule_cross.py \
-       --invcf 04_bcftools/Chr_01.ovule_f2s.snps_only.vcf.gz \
+       --invcf 04_bcftools/ovule_f2s.snps_only.vcf \
        --ParentList data/ovule_parents.txt \
        --SampleList data/ovule_f2_samples.txt \
        --out ovule_f2s.min60 \
@@ -122,16 +130,14 @@ These instructions will help you set up the project on your local machine.
        --MaxMissingData 1
     ```
 
-5. **Linkage map assembly:**
+6. **Linkage map assembly:**
     ```bash
-    bash scripts/lepmap.sh -p ovule_f2s.min60.max3 -o ovule_f2s -l 10 -t .20 -q common
+    bash scripts/lepmap.sh -p ovule_f2s.min60.max3 -o ovule_f2s -l 10 -t .20 -s False -q common
+    sbatch lepmap10.20.0.0001.sh
     ```
-    Then parse ordered markers:
-    ```bash
-    python scripts/split_lepmap.py order.10.20.0.0001.ovule_f2s.txt ovule_f2s.10.20 False
-    ```
+    This single job runs the full LepMap3 pipeline (`ParentCall2` → `Filtering2` → `SeparateChromosomes2` → `OrderMarkers2`), then re-maps marker IDs to contig/position, splits by linkage group (`split_lepmap.py`), and converts to phased genotype calls (`map2genotypes.awk`) — see `Linkage_map_assembly.Rmd` for the underlying logic this automates.
 
-6. **QTL analysis:**
+7. **QTL analysis:**
     - Render `Rqtl.Rmd` from repository root:
        ```bash
        conda activate linkage-mapping_rmd
@@ -157,6 +163,9 @@ These instructions will help you set up the project on your local machine.
    - `sequences.txt DIR picard partition`
 - `scripts/bcftools.sh`
    - `listfiles bamfiles DIR genome_dir genome prefix partition`
+- `scripts/concatenate_vcfs.sh`
+   - `listfiles prefix bcftools_dir partition`
+   - `listfiles` and `prefix` must match the values passed to `scripts/bcftools.sh`.
 - `scripts/filter_vcf_for_lepmap3_ovule_cross.py`
    - Required flags:
       - `--invcf --ParentList --SampleList --out --minMapQ --minF2depth --missingList --MaxMissingData`
@@ -165,10 +174,13 @@ These instructions will help you set up the project on your local machine.
    - Optional threshold:
       - `--FractionF2` (default `0`)
 - `scripts/lepmap.sh`
-   - `[-p PRE] [-o OUT] [-l LOD] [-t THETA] [-q PARTITION]`
-   - Note: the script header mentions `-d`, but the current option parser does not accept `-d`.
+   - `[-p PRE] [-o OUT] [-l LOD] [-t THETA] [-d dT] [-s MINORSCAFS] [-q PARTITION]`
+   - `-d` was previously broken (missing from the option parser); now fixed.
+   - `-s` is new: controls the `minorscafs` argument passed to `split_lepmap.py` (default `False`).
+   - The generated job now also re-maps marker IDs to contig/position, splits by linkage group, and produces phased genotype calls in the same submission (previously separate manual steps).
 - `scripts/split_lepmap.py`
    - `mapping_order_file outprefix minorscafs`
+   - Normally invoked automatically by the job script `scripts/lepmap.sh` generates, not run directly.
 
 ### Data Files
 

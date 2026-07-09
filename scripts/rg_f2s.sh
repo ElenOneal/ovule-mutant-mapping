@@ -30,18 +30,19 @@ if [ ! -d "$DIR" ]; then
 fi
 
 # sample_names file format:
-#  <barcode>    <assigned_F2_name>    <external_F2_name>
+#  <barcode>    <assigned_F2_name>    <external_F2_name> <cross?
 # Example:
-#  GGAAGAA    F2.01    1A
-#  CAGAGAA    F2.02    6E
+#  GGAAGAA    F2.01    1A crossname
+#  CAGAGAA    F2.02    6E crossname
 #
 # - first column is the barcode sequence
 # - second column is the F2 name assigned in this project
 # - third column is the F2 name used by the other lab
+# - fourth column is the cross name
 # - fields are tab-separated
 
 # Main loop
-while IFS=$'\t' read -r a b c; do
+while IFS=$'\t' read -r a b c rest; do
   script_file="${b}.rg.sh"
   {
     echo '#!/bin/bash'

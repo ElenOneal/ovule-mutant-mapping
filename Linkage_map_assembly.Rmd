@@ -46,17 +46,17 @@ For a concise pipeline roadmap and step-by-step script order, see `WORKFLOW.md`.
 This analysis was executed in R version 4.0.5 and relies on the following conda environments:
 
 - `linkage-mapping_rmd` for rendering this Rmarkdown report
-- `linkage-mapping` for the main analysis tools
+- `f1mapping` for the main analysis tools
 - `py2` for legacy Python 2 ddRAD de-aggregation scripts
 
-VCFtools is loaded via the HPC module system (module add VCFtools) in the pipeline chunks. If running outside an HPC environment, install VCFtools separately or add it to the linkage-mapping conda environment.
+VCFtools is loaded via the HPC module system (module add VCFtools) in the pipeline chunks. If running outside an HPC environment, install VCFtools separately or add it to the f1mapping conda environment.
 
 
 Create the environments using:
 
 ```bash
 conda env create -f environment/linkage-mapping_rmd.yml -n linkage-mapping_rmd
-conda env create -f environment/linkage-mapping_environment.yml -n linkage-mapping
+conda env create -f environment/linkage-mapping_environment.yml -n f1mapping
 conda env create -f environment/py2_environment.yml -n py2
 ```
 
@@ -64,7 +64,7 @@ Activate the report environment and render this document with:
 
 ```bash
 conda activate linkage-mapping_rmd
-Rscript -e "rmarkdown::render('Ovules.Rmd')"
+Rscript -e "rmarkdown::render('Linkage_map_assembly.Rmd')"
 ```
 
 ## Key files
@@ -84,7 +84,7 @@ This report uses and generates the following key files:
 ## Rationale
 We did QTL mapping in an F2 mapping population to discover the loci underlying an ovule mutant in an inbred line of M. nudatus (GMR2). The mutant phenotype is characterized by an early arrest of the ovule integument and the later development of the ovule primordia into filamentous structures. Additionally, medusa mutant ovules fail to develop mature female gametophytes and are female sterile. An F2 population was created by first generating an F1 by crossing GMR2 (as pollen donor) to inbred line DHRO22, then selfing the F1. Both inbred lines were inbred for at least 6 generations. Phenotyping of F2s revealed that the ovule mutant appears to segregate at a 25-30% rate.
 
-An Rmarkdown file (`scripts/Ovules.Rmd`) documents the analysis. The main report is rendered in `linkage-mapping_rmd`; legacy ddRAD de-aggregation scripts use the `py2` environment.
+This Rmarkdown file (`Linkage_map_assembly.Rmd`) documents the analysis. The main report is rendered in `linkage-mapping_rmd`; legacy ddRAD de-aggregation scripts use the `py2` environment.
 
 ### Cross details
 
@@ -155,7 +155,7 @@ Try with offset bases of 0 first. ("The number of basepairs to offset from the 5
 for file in *.flip.sh; do sbatch $file; done
 ```
 
-Example of barcode sequence file (dxg_f2_1_barcodes)
+Example of barcode sequence file (library1.barcodes.txt)
 
 ```{r,barcode_files,include=FALSE,eval=FALSE}
 library1_barcodes <- read.table(here::here('data','library1.barcodes.txt'),sep='\t',h=F)
@@ -183,7 +183,7 @@ rm *rem.1.fq.gz
 rm *rem.2.fq.gz
 ```
 
-Bash script for writing alignment files for each F2. Scripts call ovule_barcode_key.txt file, which is a tab-delimited file with three columns. Column 1 = barcode; Column 2 = F2 name given by Elen Oneal; Column 3 = F2 name given by Miguel Flores. First trim reads, align to TOL v5 genome, add read groups. Collect stats on alignment for each F2.
+Bash script for writing alignment files for each F2. Scripts call ovule_barcode_key.txt file, which is a tab-delimited file with four columns. Column 1 = barcode; Column 2 = F2 name given by Elen Oneal; Column 3 = F2 name given by Miguel Flores; Column 4 = cross name. First trim reads, align to TOL v5 genome, add read groups. Collect stats on alignment for each F2.
 
 ```{bash,align_f2s,include=FALSE,eval=FALSE}
 ./align_f2s.sh ovule_barcode_key.txt 03_align genome_dir Mguttatus.IM767.v2.fa common
@@ -263,7 +263,7 @@ cd 05_filter
 PRE=ovule_f2s
 OUT=ovule_f2s.min60
 
-python filter_vcf_for_lepmap3_ovule_cross.py --invcf $PRE.snps_only.vcf --ParentList ovule_parents.txt --out $OUT --minMapQ 20 --filterInbredParents True --filterforhets True --minparentdepth True --maxparentdepth True --missingList $PRE.frac_missing_data.txt --MaxMissingData 1 --filterMissingParents True --FractionF2 60 --minF2depth 4 > out
+python filter_vcf_for_lepmap3_ovule_cross.py --invcf $PRE.snps_only.vcf --ParentList ovule_parents.txt --SampleList ovule_f2_samples.txt --out $OUT --minMapQ 20 --filterInbredParents True --filterforhets True --minparentdepth True --maxparentdepth True --missingList $PRE.frac_missing_data.txt --MaxMissingData 1 --filterMissingParents True --FractionF2 60 --minF2depth 4 > out
 
 ```
 
@@ -416,7 +416,7 @@ Getting phased genotypes for individuals. F2s were phased with grandparent phase
 
 ```{r,plot_linkage_map,echo=FALSE,eval=TRUE}
 suppressMessages(library(htmltools))
-order <- read.table(here::here('data','ovule_f2s.10.20.0001_mappingorder.txt'),h=F,sep='\t')
+order <- read.table(here::here('data','ovule_f2s.10.20_mappingorder.txt'),h=F,sep='\t')
 source(here::here('scripts','plot_linkage_groups.R'))
 plotLM <- plot_lg(order)
 
@@ -454,7 +454,7 @@ suppressMessages(library(stringr))
 ped <- read.table(here::here('data','ovule.ped.txt'),h=F,sep='\t')
 phase <- read.table(here::here('data','ovule_f2s.10.20.phase.txt'),h=F,sep='\t')
 map <- read.table(here::here('data','order.10.20.0.0001.ovule_f2s.mapped'),h=F,sep='\t')
-order <- read.table(here::here('data','ovule_f2s.10.20.0001_mappingorder.txt'),h=F,sep='\t')
+order <- read.table(here::here('data','ovule_f2s.10.20_mappingorder.txt'),h=F,sep='\t')
 lg <- c(1,2,3,4,5,6,7,8,9,10,11,12,13,14)
 new_lg <- c(14,4,10,6,8,13,2,12,5,9,1,3,11,7)
 flip <- c(TRUE,TRUE,TRUE,TRUE,TRUE,TRUE,FALSE,FALSE,FALSE,TRUE,FALSE,FALSE,FALSE,FALSE)
@@ -568,6 +568,7 @@ cd 05_filter
 python filter_vcf_for_lepmap3_ovule_cross.py \
   --invcf ovule_f2s.snps_only.vcf \
   --ParentList ovule_parents.txt \
+  --SampleList ovule_f2_samples.txt \
   --out ovule_f2s.min60 \
   --minMapQ 20 \
   --filterInbredParents True \
